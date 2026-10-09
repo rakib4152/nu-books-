@@ -1,0 +1,6 @@
+{
+  "name": "FolioPress PDF Reader Admin Engine",
+  "description": "Production-grade Admin Panel and REST API for paid PDF Book Reader applications with automated outline extraction and chapter hierarchy management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

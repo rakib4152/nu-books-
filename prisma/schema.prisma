@@ -1,0 +1,281 @@
+// FolioPress Prisma Schema for Hostinger Business Shared MySQL Database
+// Compatible with Prisma Client 5.x / 6.x Node.js runtime
+// Hierarchy: Subject -> SubjectYear -> Book -> PdfFile -> Chapter -> Subchapter
+
+datasource db {
+  provider     = "mysql"
+  url          = env("DATABASE_URL")
+  relationMode = "foreignKeys"
+}
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x", "rhel-openssl-1.0.x"]
+}
+
+enum Role {
+  ADMIN
+  EDITOR
+  USER
+}
+
+enum BookStatus {
+  DRAFT
+  PROCESSING
+  PUBLISHED
+  FAILED
+  ARCHIVED
+}
+
+enum ChapterSource {
+  PDF_OUTLINE
+  TEXT_EXTRACTION
+  OCR
+  MANUAL
+  AI
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+enum EntitlementStatus {
+  ACTIVE
+  EXPIRED
+  REVOKED
+}
+
+model User {
+  id              String            @id @default(uuid()) @db.VarChar(36)
+  name            String            @db.VarChar(128)
+  email           String            @unique @db.VarChar(191)
+  passwordHash    String            @db.VarChar(255)
+  role            Role              @default(USER)
+  bookmarks       Bookmark[]
+  highlights      Highlight[]
+  readingProgress ReadingProgress[]
+  entitlements    Entitlement[]
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([role])
+  @@index([createdAt])
+  @@map("users")
+}
+
+model Subject {
+  id          String        @id @default(uuid()) @db.VarChar(36)
+  name        String        @db.VarChar(120)
+  slug        String        @unique @db.VarChar(140)
+  description String?       @db.Text
+  sortOrder   Int           @default(0)
+  isActive    Boolean       @default(true)
+  years       SubjectYear[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([isActive, sortOrder])
+  @@map("subjects")
+}
+
+model SubjectYear {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  subjectId String   @db.VarChar(36)
+  subject   Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  year      Int
+  sortOrder Int      @default(0)
+  books     Book[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([subjectId, year], name: "subject_year_unique")
+  @@index([subjectId, sortOrder])
+  @@map("subject_years")
+}
+
+model Book {
+  id              String             @id @default(uuid()) @db.VarChar(36)
+  subjectYearId   String             @db.VarChar(36)
+  subjectYear     SubjectYear        @relation(fields: [subjectYearId], references: [id], onDelete: Restrict)
+  title           String             @db.VarChar(255)
+  slug            String             @unique @db.VarChar(280)
+  description     String?            @db.Text
+  language        String             @default("en") @db.VarChar(10)
+  coverUrl        String?            @db.VarChar(512)
+  status          BookStatus         @default(DRAFT)
+  isPaid          Boolean            @default(false)
+  price           Decimal            @default(0.00) @db.Decimal(10, 2)
+  totalPages      Int                @default(0)
+  pdfFiles        PdfFile[]
+  chapters        Chapter[]
+  processingJobs  PdfProcessingJob[]
+  bookmarks       Bookmark[]
+  highlights      Highlight[]
+  readingProgress ReadingProgress[]
+  entitlements    Entitlement[]
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+
+  @@index([subjectYearId])
+  @@index([status])
+  @@index([isPaid])
+  @@index([createdAt])
+  @@map("books")
+}
+
+model PdfFile {
+  id                 String             @id @default(uuid()) @db.VarChar(36)
+  bookId             String             @db.VarChar(36)
+  book               Book               @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  version            Int                @default(1)
+  originalName       String             @db.VarChar(255)
+  storageKey         String             @unique @db.VarChar(255)
+  mimeType           String             @default("application/pdf") @db.VarChar(64)
+  fileSize           BigInt             @db.BigInt
+  sha256             String             @db.VarChar(64)
+  totalPages         Int                @default(0)
+  hasOutline         Boolean            @default(false)
+  outlineExtractedAt DateTime?
+  jobs               PdfProcessingJob[]
+  createdAt          DateTime           @default(now())
+
+  @@unique([bookId, version], name: "book_version_unique")
+  @@index([bookId])
+  @@index([sha256])
+  @@map("pdf_files")
+}
+
+model Chapter {
+  id            String        @id @default(uuid()) @db.VarChar(36)
+  bookId        String        @db.VarChar(36)
+  book          Book          @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  parentId      String?       @db.VarChar(36)
+  parent        Chapter?      @relation("ChapterHierarchy", fields: [parentId], references: [id], onDelete: Cascade)
+  children      Chapter[]     @relation("ChapterHierarchy")
+  title         String        @db.VarChar(255)
+  chapterNumber Int?
+  sortOrder     Int           @default(0)
+  pageIndex     Int           @default(0) // 0-based for PDF viewers
+  pageNumber    Int           @default(1) // 1-based human readable
+  destinationX  Decimal?      @db.Decimal(8, 2)
+  destinationY  Decimal?      @db.Decimal(8, 2)
+  level         Int           @default(1) // 1 for chapter, 2 for section, 3 for subsection
+  source        ChapterSource @default(PDF_OUTLINE)
+  isVisible     Boolean       @default(true)
+  bookmarks     Bookmark[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  @@index([bookId, sortOrder])
+  @@index([bookId, parentId])
+  @@index([pageIndex])
+  @@map("chapters")
+}
+
+model PdfProcessingJob {
+  id           String     @id @default(uuid()) @db.VarChar(36)
+  bookId       String     @db.VarChar(36)
+  book         Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  pdfFileId    String?    @db.VarChar(36)
+  pdfFile      PdfFile?   @relation(fields: [pdfFileId], references: [id], onDelete: SetNull)
+  status       JobStatus  @default(PENDING)
+  attempts     Int        @default(0)
+  errorMessage String?    @db.Text
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  @@index([bookId])
+  @@index([pdfFileId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("pdf_processing_jobs")
+}
+
+model Bookmark {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  userId    String   @db.VarChar(36)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookId    String   @db.VarChar(36)
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapterId String?  @db.VarChar(36)
+  chapter   Chapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  pageIndex Int
+  note      String?  @db.Text
+  createdAt DateTime @default(now())
+
+  @@unique([userId, bookId, pageIndex])
+  @@index([userId])
+  @@index([bookId])
+  @@map("bookmarks")
+}
+
+model Highlight {
+  id        String   @id @default(uuid()) @db.VarChar(36)
+  userId    String   @db.VarChar(36)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookId    String   @db.VarChar(36)
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  pageIndex Int
+  text      String   @db.Text
+  color     String   @default("#FDE047") @db.VarChar(16)
+  position  String?  @db.Text // JSON string coordinates
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, bookId])
+  @@map("highlights")
+}
+
+model ReadingProgress {
+  id            String   @id @default(uuid()) @db.VarChar(36)
+  userId        String   @db.VarChar(36)
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookId        String   @db.VarChar(36)
+  book          Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  currentPage   Int      @default(0)
+  lastChapterId String?  @db.VarChar(36)
+  progress      Decimal  @default(0.00) @db.Decimal(5, 2)
+  updatedAt     DateTime @updatedAt
+
+  @@unique([userId, bookId])
+  @@index([userId])
+  @@index([bookId])
+  @@map("reading_progress")
+}
+
+model Entitlement {
+  id               String            @id @default(uuid()) @db.VarChar(36)
+  userId           String            @db.VarChar(36)
+  user             User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookId           String            @db.VarChar(36)
+  book             Book              @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  status           EntitlementStatus @default(ACTIVE)
+  purchasedAt      DateTime          @default(now())
+  expiresAt        DateTime?
+  paymentReference String?           @db.VarChar(128)
+
+  @@unique([userId, bookId])
+  @@index([userId])
+  @@index([bookId])
+  @@map("entitlements")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.VarChar(36)
+  actorId    String?  @db.VarChar(36)
+  action     String   @db.VarChar(64)
+  entityType String   @db.VarChar(64)
+  entityId   String   @db.VarChar(64)
+  metadata   String?  @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
